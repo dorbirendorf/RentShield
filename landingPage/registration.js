@@ -9,6 +9,30 @@ try {
   console.warn('Supabase not configured — data won\'t be saved.');
 }
 
+// ── Session tracking ──
+const sessionStartedAt = new Date();
+
+function getSessionMetadata() {
+  const durationSec = Math.round((Date.now() - sessionStartedAt.getTime()) / 1000);
+  let gaClientId = null;
+  try {
+    const tracker = window.ga && window.ga.getAll && window.ga.getAll()[0];
+    if (tracker) gaClientId = tracker.get('clientId');
+  } catch (e) {}
+  if (!gaClientId) {
+    const match = document.cookie.match(/_ga=GA\d+\.\d+\.(.+?)(?:;|$)/);
+    if (match) gaClientId = match[1];
+  }
+  return {
+    session_duration_sec: durationSec,
+    page_loaded_at: sessionStartedAt.toISOString(),
+    referrer: document.referrer || null,
+    user_agent: navigator.userAgent || null,
+    screen_resolution: `${screen.width}x${screen.height}`,
+    ga_client_id: gaClientId
+  };
+}
+
 // ── DOM refs ──
 const modal = document.getElementById('regModal');
 const modalTitle = document.getElementById('modalTitle');
@@ -24,9 +48,10 @@ let formData = {};
 // ── Save helper: upserts full formData every time ──
 async function saveToSupabase() {
   if (!sb || !formData.email) return;
+  const sessionMeta = getSessionMetadata();
   const { error } = await sb
     .from('registrations')
-    .upsert({ ...formData, updated_at: new Date().toISOString() }, { onConflict: 'email' });
+    .upsert({ ...formData, ...sessionMeta, updated_at: new Date().toISOString() }, { onConflict: 'email' });
   if (error) {
     console.error('Supabase save error:', error);
     throw error;
@@ -124,16 +149,19 @@ document.getElementById('step2Next').addEventListener('click', async () => {
   clearErrors();
   const first = document.getElementById('regFirst').value.trim();
   const last = document.getElementById('regLast').value.trim();
-  const ageVal = document.getElementById('regAge').value;
-  const age = ageVal ? parseInt(ageVal) : null;
+
+  // Validate
+  let hasError = false;
+  if (!first) { showError('regFirst', 'firstError'); hasError = true; }
+  if (!last)  { showError('regLast',  'lastError');  hasError = true; }
+  if (hasError) return;
 
   const btn = document.getElementById('step2Next');
   btn.disabled = true;
   btn.textContent = 'Saving...';
 
-  if (first) formData.first_name = first;
-  if (last) formData.last_name = last;
-  if (age) formData.age = age;
+  formData.first_name = first;
+  formData.last_name = last;
   formData.step_completed = 2;
 
   try {
@@ -150,18 +178,47 @@ document.getElementById('step2Next').addEventListener('click', async () => {
 document.getElementById('step3Submit').addEventListener('click', async () => {
   clearErrors();
   const rentVal = document.getElementById('regRent').value;
+  const ageVal = document.getElementById('regAge').value;
   const yearsVal = document.getElementById('regYears').value;
   const address = document.getElementById('regAddress').value.trim();
   const aptAddress = document.getElementById('regAptAddress').value.trim();
+  const eviction = document.querySelector('input[name="eviction"]:checked')?.value || null;
+  const hearAboutUs = document.getElementById('regHearAboutUs').value || null;
+
+  const rent = rentVal ? parseFloat(rentVal) : null;
+  const age = ageVal ? parseInt(ageVal) : null;
+  const years = yearsVal ? parseInt(yearsVal) : null;
+
+  // Validate
+  let hasError = false;
+  if (!rentVal || isNaN(rent) || rent <= 0) {
+    showError('regRent', 'rentError');
+    hasError = true;
+  }
+  if (!ageVal || isNaN(age) || age < 18 || age > 120) {
+    showError('regAge', 'ageError');
+    hasError = true;
+  }
+  if (!yearsVal || isNaN(years) || years < 0) {
+    showError('regYears', 'yearsError');
+    hasError = true;
+  }
+  if (!address)    { showError('regAddress',    'addressError'); hasError = true; }
+  if (!aptAddress) { showError('regAptAddress', 'aptError');     hasError = true; }
+  if (!eviction)   { showError('evictionYes',   'evictionError'); hasError = true; }
+  if (hasError) return;
 
   const btn = document.getElementById('step3Submit');
   btn.disabled = true;
   btn.textContent = 'Submitting...';
 
-  if (rentVal) formData.monthly_rent = parseFloat(rentVal);
-  if (yearsVal) formData.years_owned = parseInt(yearsVal);
-  if (address) formData.address = address;
-  if (aptAddress) formData.apartment_address = aptAddress;
+  formData.monthly_rent = rent;
+  formData.age = age;
+  formData.years_owned = years;
+  formData.address = address;
+  formData.apartment_address = aptAddress;
+  formData.had_eviction = eviction === 'yes';
+  if (hearAboutUs) formData.hear_about_us = hearAboutUs;
   formData.step_completed = 3;
 
   try {
@@ -182,9 +239,9 @@ document.querySelectorAll('.btn-back').forEach(btn => {
 // ── Close modal ──
 document.getElementById('modalClose').addEventListener('click', closeModal);
 document.getElementById('successClose').addEventListener('click', closeModal);
-modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+modal.addEventListener('click', (e) => { if (e.target === modal) { /* disabled: prevent accidental close */ } });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && modal.classList.contains('open')) closeModal();
+  /* Escape disabled: prevent accidental data loss */
 });
 
 // ── Wire up all "Register Now" / "Sign Up" buttons ──
